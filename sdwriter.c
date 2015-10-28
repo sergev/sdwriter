@@ -337,13 +337,15 @@ void print_symbols(char symbol, int cnt)
 /*
  * Advance the progress indicator.
  */
-void progress(unsigned step)
+int progress(unsigned step)
 {
     ++progress_count;
     if (progress_count % step == 0) {
         putchar('#');
         fflush(stdout);
+        return 1;
     }
+    return 0;
 }
 
 /*
@@ -411,10 +413,6 @@ void write_image(const char *filename, const char *device_name, int verify_only)
         print_symbols('\b', progress_len);
         fflush(stdout);
         for (count=0; count<nbytes; count+=sizeof(buf)) {
-            /* Flush buffers every 4 Mbytes. */
-            if (count % (4*1024*1024) == 0)
-                fsync(dest);
-
             /* Read data into buffer. */
             n = nbytes - count;
             if (n > sizeof(buf))
@@ -429,7 +427,11 @@ void write_image(const char *filename, const char *device_name, int verify_only)
                 fprintf(stderr, "%s: Write error\n", device_name);
                 quit(0);
             }
-            progress(progress_step);
+
+            if (progress(progress_step)) {
+                /* Flush write buffers. */
+                fsync(dest);
+            }
         }
         printf(" done      \n");
         fsync(dest);
