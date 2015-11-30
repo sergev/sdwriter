@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
@@ -35,6 +36,12 @@
 #   include <IOKit/storage/IOMedia.h>
 #   include <IOKit/storage/IOStorageDeviceCharacteristics.h>
 #   include <IOKit/usb/IOUSBLib.h>
+#endif
+
+#ifdef MINGW32
+#   include <windows.h>
+#   include <winioctl.h>
+#   define fsync(x) /*empty*/
 #endif
 
 #ifdef GITCOUNT
@@ -85,7 +92,6 @@ unsigned mseconds_elapsed(struct timeval *t0)
 
 /*
  * Get a list of SD card devices.
- * Linux version.
  */
 void get_devices(char *devtab[], int maxdev)
 {
@@ -265,6 +271,103 @@ void get_devices(char *devtab[], int maxdev)
 
     /* Free the iterator object */
     IOObjectRelease(devices);
+#elif defined(MINGW32)
+    /*
+     * Create a list of the removable USB disk devices.
+     */
+
+    /* Get a bitmask of available drives (bit 0 = A:, bit 1 = B:, etc). */
+    unsigned drive_mask = GetLogicalDrives();
+    int i;
+
+    for (i = 0; drive_mask != 0; i++, drive_mask >>= 1) {
+        if (! (drive_mask & 1))
+            continue;
+
+        char drive_char = 'A' + i;
+        char drive_name[] = "\\\\.\\A:\\";
+        drive_name[4] = drive_char;
+
+        int drive_type = GetDriveType(drive_name);
+        if (drive_type != DRIVE_REMOVABLE)
+            continue;
+
+        drive_name[6] = 0;
+        HANDLE h = CreateFile(drive_name, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+            OPEN_EXISTING, 0, NULL);
+        if (h == INVALID_HANDLE_VALUE)
+            continue;
+
+        /* Ensure that the drive is actually accessible.
+         * Multi-card hubs were reporting "removable" even when empty. */
+        DWORD dwOutBytes;
+        if (! DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY2,
+                NULL, 0, NULL, 0, &dwOutBytes, NULL))
+        {
+            /* IOCTL_STORAGE_CHECK_VERIFY2 fails on some devices under XP/Vista.
+             * Try the other (slower) method, just in case. */
+            HANDLE g = CreateFile(drive_name, FILE_READ_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                OPEN_EXISTING, 0, NULL);
+            if (g == INVALID_HANDLE_VALUE) {
+                CloseHandle(h);
+                continue;
+            }
+            if (! DeviceIoControl(g, IOCTL_STORAGE_CHECK_VERIFY,
+                    NULL, 0, NULL, 0, &dwOutBytes, NULL)) {
+                CloseHandle(g);
+                CloseHandle(h);
+                continue;
+            }
+            CloseHandle(g);
+        }
+
+        char sdbuf[sizeof(STORAGE_DEVICE_DESCRIPTOR) + 512 - 1];
+        PSTORAGE_DEVICE_DESCRIPTOR sd = (void*) sdbuf;
+        sd->Size = sizeof(sdbuf);
+
+        STORAGE_PROPERTY_QUERY query;
+        query.PropertyId = StorageDeviceProperty;
+        query.QueryType = PropertyStandardQuery;
+        if (! DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY,
+                            &query, sizeof(STORAGE_PROPERTY_QUERY), sd,
+                            sd->Size, &dwOutBytes, NULL)) {
+            CloseHandle(h);
+            continue;
+        }
+        if (sd->BusType != BusTypeUsb) {
+            CloseHandle(h);
+            continue;
+        }
+#if 0
+        /* Get the device number. */
+        typedef struct _DEVICE_NUMBER {
+            DEVICE_TYPE  DeviceType;
+            ULONG  DeviceNumber;
+            ULONG  PartitionNumber;
+        } DEVICE_NUMBER;
+        DEVICE_NUMBER dev_num;
+        if (! DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                              NULL, 0, &dev_num, sizeof(DEVICE_NUMBER),
+                              &dwOutBytes, NULL)) {
+            CloseHandle(h);
+            continue;
+        }
+#endif
+        DISK_GEOMETRY_EX geom;
+        if (! DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0,
+                &geom, sizeof(geom), &dwOutBytes, NULL)) {
+            CloseHandle(h);
+            continue;
+        }
+        unsigned mbytes = geom.DiskSize.QuadPart / 1000000;
+        CloseHandle(h);
+
+        char buf[1024];
+        sprintf(buf, "%c: - size %u MB", drive_char, mbytes);
+        devtab[ndev++] = strdup(buf);
+    }
 #else
     printf("Don't know how to get the list of CD devices on this system.\n");
 #endif
@@ -361,8 +464,14 @@ void print_mismatch(char *valid, char *invalid, int nbytes,
         expected = valid[i];
         byte = invalid[i];
         if (byte != expected) {
-            printf ("\nError at address 0x%llX: file=0x%02X, disk=0x%02X\n",
-                offset + i, expected, byte);
+            offset += i;
+            printf ("\nError at address 0x");
+            if ((offset >> 32) == 0)
+                printf ("%X", (unsigned) (offset & 0xffffffff));
+            else
+                printf ("%X%08X", (unsigned) (offset >> 32),
+                    (unsigned) (offset & 0xffffffff));
+            printf (": file=0x%02X, disk=0x%02X\n", expected, byte);
             quit(0);
         }
     }
