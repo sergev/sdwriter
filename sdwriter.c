@@ -41,13 +41,17 @@
 #ifdef MINGW32
 #   include <windows.h>
 #   include <winioctl.h>
-#   define fsync(x) /*empty*/
+#   define fsync(fd)    FlushFileBuffers((HANDLE) _get_osfhandle(fd))
 #endif
 
 #ifdef GITCOUNT
-#   define VERSION         "1.0."GITCOUNT
+#   define VERSION      "1.0."GITCOUNT
 #else
-#   define VERSION         "1.0.0"
+#   define VERSION      "1.0.0"
+#endif
+
+#ifndef O_BINARY
+#   define O_BINARY     0
 #endif
 
 const char *device_name;        /* Optional name of target device */
@@ -340,7 +344,7 @@ void get_devices(char *devtab[], int maxdev)
             CloseHandle(h);
             continue;
         }
-#if 0
+
         /* Get the device number. */
         typedef struct _DEVICE_NUMBER {
             DEVICE_TYPE  DeviceType;
@@ -354,7 +358,7 @@ void get_devices(char *devtab[], int maxdev)
             CloseHandle(h);
             continue;
         }
-#endif
+
         DISK_GEOMETRY_EX geom;
         if (! DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL, 0,
                 &geom, sizeof(geom), &dwOutBytes, NULL)) {
@@ -365,7 +369,8 @@ void get_devices(char *devtab[], int maxdev)
         CloseHandle(h);
 
         char buf[1024];
-        sprintf(buf, "%c: - size %u MB", drive_char, mbytes);
+        sprintf(buf, "\\\\.\\PhysicalDrive%u - Disk %c: size %u MB",
+            dev_num.DeviceNumber, drive_char, mbytes);
         devtab[ndev++] = strdup(buf);
     }
 #else
@@ -493,7 +498,7 @@ void write_image(const char *filename, const char *device_name, int verify_only)
         perror(filename);
         quit(0);
     }
-    dest = open(device_name, O_RDWR);
+    dest = open(device_name, O_RDWR | O_BINARY);
     if (dest < 0) {
         perror(device_name);
         quit(0);
