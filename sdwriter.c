@@ -531,13 +531,8 @@ void *disk_open(const char *name)
     h = CreateFile(name, GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) {
-        LPVOID str;
-        FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
-            FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-            NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            (LPTSTR) &str, 0, NULL);
-        fprintf(stderr, "%s: %s\n", name, (char*) str);
-        LocalFree(str);
+        fprintf(stderr, "Cannot open device %s\n", name);
+        fprintf(stderr, "Administrator permissions required.\n");
         quit(0);
     }
     return (void*) h;
@@ -549,7 +544,7 @@ void *disk_open(const char *name)
         perror(name);
         quit(0);
     }
-    return (void*) dest;
+    return (void*) (intptr_t) dest;
 #endif
 }
 
