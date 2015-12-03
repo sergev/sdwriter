@@ -370,7 +370,7 @@ void get_devices(char *devtab[], int maxdev)
 
         char buf[1024];
         sprintf(buf, "\\\\.\\PhysicalDrive%u - Disk %c: size %u MB",
-            dev_num.DeviceNumber, drive_char, mbytes);
+            (unsigned) dev_num.DeviceNumber, drive_char, mbytes);
         devtab[ndev++] = strdup(buf);
     }
 #else
@@ -379,6 +379,39 @@ void get_devices(char *devtab[], int maxdev)
 
     devtab[ndev] = 0;
 }
+
+#ifdef MINGW32
+/*
+ * Lock a filesystem while writing to the disk.
+ * Windows-specific action.
+ */
+void lock_volume(int volume_id)
+{
+    char name[] = "\\\\.\\A:";
+    name[4] += volume_id;
+
+    /* Open volume. */
+    HANDLE h = CreateFile(name, GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open volume %s\n", name);
+        return;
+    }
+
+    /* Lock volume. */
+    DWORD nbytes;
+    if (! DeviceIoControl(h, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &nbytes, NULL)) {
+        printf("Failed to lock volume %s\n", name);
+        CloseHandle(h);
+        return;
+    }
+
+    /* Unmount volume. */
+    if (! DeviceIoControl(h, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &nbytes, NULL)) {
+        printf("Failed to dismount volume %s\n", name);
+    }
+}
+#endif
 
 /*
  * Ask for a name of the target device.
@@ -419,6 +452,11 @@ const char *ask_device()
         }
         if (*reply >= '1' && *reply < '1'+ndev) {
             char *devname = devices[*reply - '1'];
+#ifdef MINGW32
+            char *q = strchr(devname, ':');
+            if (q)
+                lock_volume(q[-1] - 'A');
+#endif
             char *p = strchr(devname, ' ');
             if (p)
                 *p = 0;
@@ -483,26 +521,118 @@ void print_mismatch(char *valid, char *invalid, int nbytes,
 }
 
 /*
+ * Open the disk device.
+ */
+void *disk_open(const char *name)
+{
+#ifdef MINGW32
+    HANDLE h;
+
+    h = CreateFile(name, GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        LPVOID str;
+        FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+            FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            (LPTSTR) &str, 0, NULL);
+        fprintf(stderr, "%s: %s\n", name, (char*) str);
+        LocalFree(str);
+        quit(0);
+    }
+    return (void*) h;
+#else
+    int dest;
+
+    dest = open(name, O_RDWR);
+    if (dest < 0) {
+        perror(name);
+        quit(0);
+    }
+    return (void*) dest;
+#endif
+}
+
+/*
+ * Close disk device.
+ */
+void disk_close(void *dest)
+{
+#ifdef MINGW32
+    CloseHandle((HANDLE) dest);
+#else
+    close((int) dest);
+#endif
+}
+
+/*
+ * Write to the disk device.
+ */
+void disk_write(void *dest, char *buf, unsigned nbytes)
+{
+#ifdef MINGW32
+    unsigned long nwritten;
+    if (! WriteFile((HANDLE) dest, buf, nbytes, &nwritten, NULL)) {
+        fprintf(stderr, "%s: Write error\n", device_name);
+        quit(0);
+    }
+#else
+    if (write((int) dest, buf, nbytes) != nbytes) {
+        fprintf(stderr, "%s: Write error\n", device_name);
+        quit(0);
+    }
+#endif
+}
+
+/*
+ * Read from the disk device.
+ */
+void disk_read(void *src, char *buf, unsigned nbytes)
+{
+#ifdef MINGW32
+    unsigned long nread;
+    if (! ReadFile((HANDLE) src, buf, nbytes, &nread, NULL)) {
+        fprintf(stderr, "%s: Write error\n", device_name);
+        quit(0);
+    }
+#else
+    if (read((int) src, buf, nbytes) != nbytes) {
+        fprintf(stderr, "%s: Read error\n", device_name);
+        quit(0);
+    }
+#endif
+}
+
+/*
+ * Wait until all data are written to the disk device.
+ */
+void disk_flush(void *dest)
+{
+#ifdef MINGW32
+    FlushFileBuffers((HANDLE) dest);
+#else
+    fsync((int) dest);
+#endif
+}
+
+/*
  * Copy a contents of binary file to the device.
  */
-void write_image(const char *filename, const char *device_name, int verify_only)
+void write_image(const char *filename, int verify_only)
 {
     char buf[32*1024];
-    int src, dest, n, progress_len, progress_step;
+    int src, n, progress_len, progress_step;
+    void *dest;
     struct stat st;
     off_t nbytes, count;
     struct timeval t0;
 
-    src = open(filename, O_RDONLY);
+    src = open(filename, O_RDONLY | O_BINARY);
     if (src < 0) {
         perror(filename);
         quit(0);
     }
-    dest = open(device_name, O_RDWR | O_BINARY);
-    if (dest < 0) {
-        perror(device_name);
-        quit(0);
-    }
+    dest = disk_open(device_name);
     fstat(src, &st);
     nbytes = st.st_size;
     printf("     Source: %s\n", filename);
@@ -532,23 +662,20 @@ void write_image(const char *filename, const char *device_name, int verify_only)
             if (n > sizeof(buf))
                 n = sizeof(buf);
             if (read(src, buf, n) != n) {
-                fprintf(stderr, "%s: Read error\n", filename);
+                fprintf(stderr, "%s: Read error, n=%d\n", filename, n);
                 quit(0);
             }
 
             /* Write data to the disk. */
-            if (write(dest, buf, n) != n) {
-                fprintf(stderr, "%s: Write error\n", device_name);
-                quit(0);
-            }
+            disk_write(dest, buf, n);
 
             if (progress(progress_step)) {
                 /* Flush write buffers. */
-                fsync(dest);
+                disk_flush(dest);
             }
         }
         printf(" done      \n");
-        fsync(dest);
+        disk_flush(dest);
     }
     if (verify_only) {
         char buf2[sizeof(buf)];
@@ -568,10 +695,7 @@ void write_image(const char *filename, const char *device_name, int verify_only)
             }
 
             /* Read destination data. */
-            if (read(dest, buf2, n) != n) {
-                fprintf(stderr, "%s: Read error\n", device_name);
-                quit(0);
-            }
+            disk_read(dest, buf, n);
 
             /* Compare. */
             if (memcmp(buf, buf2, n) != 0) {
@@ -585,7 +709,7 @@ void write_image(const char *filename, const char *device_name, int verify_only)
         printf(" done       \n");
     }
     close(src);
-    close(dest);
+    disk_close(dest);
     printf("      Speed: %.1f MB/sec\n",
         nbytes / 1000.0 / mseconds_elapsed(&t0));
 }
@@ -674,7 +798,7 @@ int main(int argc, char *argv[])
     if (! device_name)
         device_name = ask_device();
 
-    write_image(filename, device_name, verify_only);
+    write_image(filename, verify_only);
 
     quit(1);
     return 0;
