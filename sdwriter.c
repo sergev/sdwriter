@@ -556,7 +556,7 @@ void disk_close(void *dest)
 #ifdef MINGW32
     CloseHandle((HANDLE) dest);
 #else
-    close((int) dest);
+    close((uintptr_t) dest);
 #endif
 }
 
@@ -572,7 +572,7 @@ void disk_write(void *dest, char *buf, unsigned nbytes)
         quit(0);
     }
 #else
-    if (write((int) dest, buf, nbytes) != nbytes) {
+    if (write((uintptr_t) dest, buf, nbytes) != nbytes) {
         fprintf(stderr, "%s: Write error\n", device_name);
         quit(0);
     }
@@ -591,7 +591,7 @@ void disk_read(void *src, char *buf, unsigned nbytes)
         quit(0);
     }
 #else
-    if (read((int) src, buf, nbytes) != nbytes) {
+    if (read((uintptr_t) src, buf, nbytes) != nbytes) {
         fprintf(stderr, "%s: Read error\n", device_name);
         quit(0);
     }
@@ -606,7 +606,7 @@ void disk_flush(void *dest)
 #ifdef MINGW32
     FlushFileBuffers((HANDLE) dest);
 #else
-    fsync((int) dest);
+    fsync((uintptr_t) dest);
 #endif
 }
 
