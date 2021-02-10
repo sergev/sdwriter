@@ -2,3 +2,5 @@
 *~
 sdwriter
 build
+.waf*
+.lock*

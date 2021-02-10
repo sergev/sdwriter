@@ -9,26 +9,24 @@
 #
 import sys
 
-APPNAME = 'sdwriter'
-VERSION = '0.1'
+def options(project):
+    project.load('compiler_c')
 
-def options(opt):
-    opt.load('compiler_c')
-
-def configure(conf):
+def configure(project):
     out = 'build'
-    conf.load('compiler_c')
+    project.load('compiler_c')
 
-def build(bld):
+def build(project):
     LIBS = []
     if sys.platform == 'linux2':
         LIBS = ['udev']
-    if sys.platform == 'darwin':
-        bld.env.FRAMEWORK += ['CoreFoundation', 'IOKit']
 
-    bld.program(
+    if sys.platform == 'darwin':
+        project.env.FRAMEWORK += ['CoreFoundation', 'IOKit']
+
+    project.program(
         source       = 'sdwriter.c',
-        target       = APPNAME,
+        target       = 'sdwriter',
         includes     = ['.'],
         lib          = LIBS,
         install_path = '/usr/local/bin',
