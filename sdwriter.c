@@ -201,7 +201,7 @@ void get_devices(char *devtab[], int maxdev)
     CFDictionarySetValue(dict, CFSTR(kIOMediaWholeKey), kCFBooleanTrue);
 
     io_iterator_t devices = IO_OBJECT_NULL;
-    kern_return_t result = IOServiceGetMatchingServices(kIOMasterPortDefault,
+    kern_return_t result = IOServiceGetMatchingServices(kIOMainPortDefault,
         dict, &devices);
     if (result != KERN_SUCCESS) {
         printf("Cannot find matching IO services.\n");
